@@ -1,6 +1,18 @@
-# LuaDevTemplate
+# 简明天气 表盘
+
+> 🧩 simple-weather-watchface
+
+---
+
+## 项目简介
+
+简明天气是适用于Vela的长期天气存储快应用
+
+## LuaDevTemplate
 
 Vela/QuickApp 表盘 Lua 开发模板。
+
+https://www.bilibili.com/video/BV1Jv6wBBEVK/
 
 ## 目录结构
 
