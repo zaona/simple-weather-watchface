@@ -31,6 +31,7 @@ local collectgarbage = collectgarbage
 local orig_Timer = lvgl.Timer
 local orig_Anim = lvgl.Anim
 local fs_open_dir = lvgl.fs.open_dir
+local unpack = table.unpack
 
 -- 跟踪用户代码创建的独立资源（不在 widget tree 上的）
 local app_timers = {}
@@ -88,6 +89,10 @@ end
 
 local function cleanup_resources()
   tracking = false
+
+  local function log_error(msg)
+    print("[hotreload] " .. tostring(msg))
+  end
 
   local function try(desc, fn)
     local ok, err = pcall(fn)

@@ -1,4 +1,5 @@
 local lvgl = require("lvgl")
+local SCRIPT_PATH = rawget(_G, "SCRIPT_PATH") or ""
 
 local function file_exists(path)
   local file = io.open(path, "r")
@@ -54,86 +55,169 @@ local root = lvgl.Object(nil, {
 root:clear_flag(lvgl.FLAG.SCROLLABLE)
 root:add_flag(lvgl.FLAG.EVENT_BUBBLE)
 
-local time_label = lvgl.Label(root, {
-  text = "--:--",
-  text_color = 0x7E93AE,
-  text_font = get_text_font(14),
-  align = { type = lvgl.ALIGN.TOP_MID, y_ofs = 6 },
+local last_weather_raw = nil
+
+local function resolve_images_root()
+  local candidates = {}
+  if type(SCRIPT_PATH) == "string" then
+    local normalized = SCRIPT_PATH:gsub("\\", "/")
+    local replaced = normalized:gsub("/lua/?$", "/images/")
+    table.insert(candidates, replaced)
+    table.insert(candidates, normalized .. "../images/")
+  end
+  table.insert(candidates, "/data/app/watchface/market/849698804/images/")
+  table.insert(candidates, "/watchface/images/")
+
+  for _, path in ipairs(candidates) do
+    if file_exists(path .. "weather-bgs/11.png") then
+      return path
+    end
+  end
+  return candidates[1]
+end
+
+local images_root = resolve_images_root()
+
+local function img_path(relative)
+  return images_root .. relative
+end
+
+local bg_image = lvgl.Image(root, {
+  src = img_path("weather-bgs/11.png"),
+  align = lvgl.ALIGN.CENTER,
 })
 
-local title = lvgl.Label(root, {
-  text = "今日天气",
-  text_color = 0xC7D4E5,
-  text_font = get_text_font(18),
-  align = { type = lvgl.ALIGN.TOP_MID, y_ofs = 28 },
+local time_label = lvgl.Label(root, {
+  text = "--:--",
+  text_color = 0xDCE4F0,
+  text_font = get_text_font(20),
+  align = { type = lvgl.ALIGN.TOP_MID, y_ofs = 8 },
 })
 
 local location_label = lvgl.Label(root, {
   text = "位置",
-  text_color = 0x8EA4C0,
-  text_font = get_text_font(16),
-  align = { type = lvgl.ALIGN.TOP_MID, y_ofs = 52 },
+  text_color = 0xEAF1FA,
+  text_font = get_text_font(24),
+  align = { type = lvgl.ALIGN.TOP_MID, y_ofs = 34 },
 })
 
 local update_label = lvgl.Label(root, {
-  text = "--:--  --",
-  text_color = 0x7E93AE,
-  text_font = get_text_font(14),
-  align = { type = lvgl.ALIGN.TOP_MID, y_ofs = 74 },
-})
-
-local main_card = lvgl.Object(root, {
-  w = screen_w - 36,
-  h = 182,
-  radius = 22,
-  bg_color = 0x141A24,
-  bg_opa = lvgl.OPA(100),
-  border_width = 1,
-  border_color = 0x1F2A3A,
-  align = { type = lvgl.ALIGN.CENTER, y_ofs = 4 },
-})
-main_card:clear_flag(lvgl.FLAG.SCROLLABLE)
-main_card:add_flag(lvgl.FLAG.EVENT_BUBBLE)
-
-local temp_label = lvgl.Label(main_card, {
-  text = "--°",
-  text_color = 0xE8EEF5,
-  text_font = get_text_font(32),
-  align = { type = lvgl.ALIGN.TOP_MID, y_ofs = 20 },
-})
-
-local range_label = lvgl.Label(main_card, {
-  text = "--°/--°",
-  text_color = 0xC7D4E5,
-  text_font = get_text_font(16),
-  align = { type = lvgl.ALIGN.TOP_MID, y_ofs = 76 },
-})
-
-local condition_label = lvgl.Label(main_card, {
   text = "--",
-  text_color = 0x9FB3C8,
-  text_font = get_text_font(16),
-  align = { type = lvgl.ALIGN.TOP_MID, y_ofs = 110 },
+  text_color = 0xC3D0E2,
+  text_font = get_text_font(18),
+  align = { type = lvgl.ALIGN.TOP_MID, y_ofs = 64 },
 })
+
+
+local hero_group_w = screen_w - 32
+local hero_group = lvgl.Object(root, {
+  w = hero_group_w,
+  h = 240,
+  bg_opa = 0,
+  border_width = 0,
+  align = { type = lvgl.ALIGN.TOP_MID, y_ofs = 96 },
+})
+hero_group:clear_flag(lvgl.FLAG.SCROLLABLE)
+hero_group:add_flag(lvgl.FLAG.EVENT_BUBBLE)
+
+local icon_image = lvgl.Image(hero_group, {
+  src = img_path("weather-icons/cloudy.png"),
+  align = { type = lvgl.ALIGN.TOP_MID, y_ofs = 4 },
+})
+
+local temp_label = lvgl.Label(hero_group, {
+  text = "--°",
+  text_color = 0xFFFFFF,
+  text_font = get_text_font(48),
+  align = { type = lvgl.ALIGN.TOP_MID, x_ofs = 8, y_ofs = 56 },
+})
+
+local condition_label = lvgl.Label(hero_group, {
+  text = "--",
+  text_color = 0xEAF1FA,
+  text_font = get_text_font(22),
+  align = { type = lvgl.ALIGN.TOP_MID, y_ofs = 130 },
+})
+
+local range_label = lvgl.Label(hero_group, {
+  text = "--°/--°",
+  text_color = 0xC3D0E2,
+  text_font = get_text_font(22),
+  align = { type = lvgl.ALIGN.TOP_MID, x_ofs = 3, y_ofs = 160 },
+})
+
+local detail_card_w = screen_w - 36
+local detail_card_h = 138
 
 local detail_card = lvgl.Object(root, {
-  w = screen_w - 36,
-  h = 86,
-  radius = 18,
-  bg_color = 0x11161F,
-  bg_opa = lvgl.OPA(100),
-  border_width = 1,
-  border_color = 0x1B2533,
-  align = { type = lvgl.ALIGN.BOTTOM_MID, y_ofs = -14 },
+  w = detail_card_w,
+  h = detail_card_h,
+  radius = 22,
+  bg_color = 0xFFFFFF,
+  bg_opa = lvgl.OPA(24),
+  border_width = 0,
+  pad_all = 0,
+  align = { type = lvgl.ALIGN.BOTTOM_MID, y_ofs = -24 },
 })
 detail_card:clear_flag(lvgl.FLAG.SCROLLABLE)
 detail_card:add_flag(lvgl.FLAG.EVENT_BUBBLE)
 
-local detail_label = lvgl.Label(detail_card, {
-  text = "湿度 --%  紫外线 --\n风力 --  气压 --",
-  text_color = 0x7E93AE,
-  text_font = get_text_font(14),
-  align = lvgl.ALIGN.CENTER,
+local detail_col_w = math.floor(detail_card_w / 2)
+
+local uv_value_label = lvgl.Label(detail_card, {
+  text = "--",
+  text_color = 0xFFFFFF,
+  text_font = get_text_font(22),
+  align = { type = lvgl.ALIGN.TOP_LEFT, x_ofs = 10, y_ofs = 12 },
+})
+
+local uv_title_label = lvgl.Label(detail_card, {
+  text = "紫外线",
+  text_color = 0xFFFFFF,
+  text_font = get_text_font(16),
+  align = { type = lvgl.ALIGN.TOP_LEFT, x_ofs = 10, y_ofs = 44 },
+})
+
+local hum_value_label = lvgl.Label(detail_card, {
+  text = "--",
+  text_color = 0xFFFFFF,
+  text_font = get_text_font(22),
+  align = { type = lvgl.ALIGN.TOP_LEFT, x_ofs = detail_col_w + 6, y_ofs = 12 },
+})
+
+local hum_title_label = lvgl.Label(detail_card, {
+  text = "湿度",
+  text_color = 0xFFFFFF,
+  text_font = get_text_font(16),
+  align = { type = lvgl.ALIGN.TOP_LEFT, x_ofs = detail_col_w + 6, y_ofs = 44 },
+})
+
+local wind_value_label = lvgl.Label(detail_card, {
+  text = "--",
+  text_color = 0xFFFFFF,
+  text_font = get_text_font(20),
+  align = { type = lvgl.ALIGN.TOP_LEFT, x_ofs = 10, y_ofs = 74 },
+})
+
+local wind_title_label = lvgl.Label(detail_card, {
+  text = "风力",
+  text_color = 0xFFFFFF,
+  text_font = get_text_font(16),
+  align = { type = lvgl.ALIGN.TOP_LEFT, x_ofs = 10, y_ofs = 104 },
+})
+
+local pressure_value_label = lvgl.Label(detail_card, {
+  text = "--",
+  text_color = 0xFFFFFF,
+  text_font = get_text_font(20),
+  align = { type = lvgl.ALIGN.TOP_LEFT, x_ofs = detail_col_w + 6, y_ofs = 74 },
+})
+
+local pressure_title_label = lvgl.Label(detail_card, {
+  text = "气压",
+  text_color = 0xFFFFFF,
+  text_font = get_text_font(16),
+  align = { type = lvgl.ALIGN.TOP_LEFT, x_ofs = detail_col_w + 6, y_ofs = 104 },
 })
 
 local WeatherIconMap = {
@@ -292,11 +376,11 @@ local function parse_iso_time(text)
     return nil
   end
   return os.time({
-    year = tonumber(year),
-    month = tonumber(month),
-    day = tonumber(day),
-    hour = tonumber(hour),
-    min = tonumber(min),
+    year = tonumber(year) or 0,
+    month = tonumber(month) or 0,
+    day = tonumber(day) or 0,
+    hour = tonumber(hour) or 0,
+    min = tonumber(min) or 0,
     sec = tonumber(sec) or 0,
   })
 end
@@ -449,17 +533,43 @@ local function parse_hourly_list(hourly_data)
 end
 
 local function read_weather_file()
-  local path = "/data/quickapp/files/com.application.zaona.weather/weather.txt"
-  local file = io.open(path, "r")
-  if not file then
-    return nil, path
+  local candidates = {
+    "internal://files/weather.txt",
+    "/data/quickapp/files/com.application.zaona.weather/weather.txt",
+    "/data/quickapp/files/com.application.zaona.weather/files/weather.txt",
+    "/data/quickapp/files/com.application.zaona.weather/internal/files/weather.txt",
+    "/data/quickapp/com.application.zaona.weather/files/weather.txt",
+    "/data/app/com.application.zaona.weather/files/weather.txt",
+  }
+
+  local function read_file(path)
+    local file = io.open(path, "r")
+    if file then
+      local content = file:read("*a")
+      file:close()
+      if content and #content > 0 then
+        return content
+      end
+    end
+    local fs = lvgl.fs.open_file(path, "r")
+    if fs then
+      local content = fs:read("*a")
+      fs:close()
+      if content and #content > 0 then
+        return content
+      end
+    end
+    return nil
   end
-  local content = file:read("*a")
-  file:close()
-  if content and #content > 0 then
-    return content, path
+
+  for _, path in ipairs(candidates) do
+    local content = read_file(path)
+    if content then
+      return content, path
+    end
   end
-  return nil, path
+
+  return nil, candidates[1]
 end
 
 local function decode_json(text)
@@ -497,7 +607,8 @@ end
 local function parse_weather_fallback(text)
   local location = text:match('"location"%s*:%s*"(.-)"')
   local update_time = text:match('"updateTime"%s*:%s*"(.-)"')
-  local daily_block = text:match('"daily"%s*:%s*%[(%b{})')
+  local daily_str = text:match('"daily"%s*:%s*%[([%s%S]-)%]') or ""
+  local daily_block = daily_str:match("%b{}")
   if not daily_block then
     return nil
   end
@@ -528,11 +639,44 @@ local function parse_weather_fallback(text)
   }
 end
 
+local function extract_day_from_raw(raw, target_date)
+  if not raw or not target_date then
+    return nil
+  end
+  local daily_str = raw:match('"daily"%s*:%s*%[([%s%S]-)%]') or ""
+  for obj in daily_str:gmatch("%b{}") do
+    local fx = obj:match('"fxDate"%s*:%s*"(.-)"')
+    if fx == target_date then
+      local function pick(field)
+        return obj:match('"' .. field .. '"%s*:%s*"(.-)"')
+      end
+      return {
+        fxDate = fx,
+        tempMax = pick("tempMax"),
+        tempMin = pick("tempMin"),
+        sunrise = pick("sunrise"),
+        sunset = pick("sunset"),
+        iconDay = pick("iconDay"),
+        textDay = pick("textDay"),
+        humidity = pick("humidity"),
+        uvIndex = pick("uvIndex"),
+        pressure = pick("pressure"),
+        precip = pick("precip"),
+        windDirDay = pick("windDirDay"),
+        windScaleDay = pick("windScaleDay"),
+        wind360Day = pick("wind360Day"),
+      }
+    end
+  end
+  return nil
+end
+
 local function load_weather()
   local raw, source_path = read_weather_file()
   if not raw then
     return nil, source_path
   end
+  last_weather_raw = raw
   local data = decode_json(raw)
   if data and data.daily and data.daily[1] then
     return data, source_path
@@ -554,17 +698,68 @@ end
 
 local function update_weather_view(data, source_path)
   if not data or not data.daily or not data.daily[1] then
-    temp_label:set({ text = "暂无天气数据" })
+    temp_label:set({ text = "无数据", align = { type = lvgl.ALIGN.TOP_MID, x_ofs = 0, y_ofs = 70 } })
     condition_label:set({ text = "--" })
     time_label:set({ text = "--:--" })
     location_label:set({ text = "--" })
     update_label:set({ text = "--" })
     range_label:set({ text = "--°/--°" })
-    detail_label:set({ text = "湿度 --%  紫外线 --\n风力 --  气压 --" })
+    uv_value_label:set({ text = "--" })
+    hum_value_label:set({ text = "--" })
+    wind_value_label:set({ text = "--" })
+    pressure_value_label:set({ text = "--" })
+    bg_image:set_src(img_path("weather-bgs/11.png"))
+    icon_image:set_src(img_path("weather-icons/cloudy.png"))
     return
   end
 
-  local today = data.daily[1]
+  local function normalize_date(value)
+    if not value then
+      return nil
+    end
+    local text = tostring(value)
+    local dashed = text:match("(%d%d%d%d%-%d%d%-%d%d)")
+    if dashed then
+      return dashed
+    end
+    local compact = text:match("^(%d%d%d%d)(%d%d)(%d%d)$")
+    if compact then
+      return compact:sub(1, 4) .. "-" .. compact:sub(5, 6) .. "-" .. compact:sub(7, 8)
+    end
+    return nil
+  end
+
+  local today_str = normalize_date(os.date("%Y-%m-%d"))
+  local today = nil
+  for _, day in pairs(data.daily) do
+    if normalize_date(day.fxDate) == today_str then
+      today = day
+      break
+    end
+  end
+
+  if (not today or not today.fxDate) and last_weather_raw then
+    today = extract_day_from_raw(last_weather_raw, today_str) or today
+  end
+  if not today then
+    today = nil
+  end
+
+  if not today then
+    temp_label:set({ text = "无数据", align = { type = lvgl.ALIGN.TOP_MID, x_ofs = 0, y_ofs = 70 } })
+    condition_label:set({ text = "--" })
+    time_label:set({ text = "--:--" })
+    location_label:set({ text = "--" })
+    update_label:set({ text = "--" })
+    range_label:set({ text = "--°/--°" })
+    uv_value_label:set({ text = "--" })
+    hum_value_label:set({ text = "--" })
+    wind_value_label:set({ text = "--" })
+    pressure_value_label:set({ text = "--" })
+    bg_image:set_src(img_path("weather-bgs/11.png"))
+    icon_image:set_src(img_path("weather-icons/cloudy.png"))
+    return
+  end
   local location = data.location or "--"
   local temp_max = today.tempMax or "--"
   local temp_min = today.tempMin or "--"
@@ -587,22 +782,20 @@ local function update_weather_view(data, source_path)
   local current_temp = get_current_temperature(today, hourly_list)
   local safe_location = to_ascii(location, "位置")
   local safe_text = to_ascii(text_day, icon_code)
-  local safe_wind_dir = to_ascii(wind_dir, "--")
+  local safe_wind_scale = to_ascii(wind_scale, "--")
 
   location_label:set({ text = safe_location })
   time_label:set({ text = format_current_time() })
   update_label:set({ text = time_ago })
-  temp_label:set({ text = current_temp .. "°" })
+  temp_label:set({ text = current_temp .. "°", align = { type = lvgl.ALIGN.TOP_MID, x_ofs = 8, y_ofs = 70 } })
   range_label:set({ text = temp_min .. "°/" .. temp_max .. "°" })
   condition_label:set({ text = safe_text })
-  detail_label:set({
-    text = "湿度 " .. humidity .. "%  紫外线 " .. uv_index .. "\n风力 "
-      .. safe_wind_dir
-      .. " "
-      .. wind_scale
-      .. "  气压 "
-      .. pressure,
-  })
+  uv_value_label:set({ text = uv_index })
+  hum_value_label:set({ text = humidity .. "%" })
+  wind_value_label:set({ text = safe_wind_scale })
+  pressure_value_label:set({ text = pressure })
+  bg_image:set_src(img_path("weather-bgs/" .. background .. ".png"))
+  icon_image:set_src(img_path("weather-icons/" .. icon_code .. ".png"))
 end
 
 local weather_data, weather_path = load_weather()
