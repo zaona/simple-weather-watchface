@@ -1,4 +1,6 @@
 local lvgl = require("lvgl")
+local dataman_ok, dataman = pcall(require, "dataman")
+local topic_ok, topic = pcall(require, "topic")
 local SCRIPT_PATH = rawget(_G, "SCRIPT_PATH") or ""
 
 local function file_exists(path)
@@ -798,5 +800,44 @@ local function update_weather_view(data, source_path)
   icon_image:set_src(img_path("weather-icons/" .. icon_code .. ".png"))
 end
 
-local weather_data, weather_path = load_weather()
-update_weather_view(weather_data, weather_path)
+local current_weather_data, current_weather_path = load_weather()
+local last_update_time = current_weather_data and current_weather_data.updateTime or nil
+update_weather_view(current_weather_data, current_weather_path)
+
+local function refresh_weather_data(force)
+  local new_data, new_path = load_weather()
+  local new_update_time = new_data and new_data.updateTime or nil
+  if not force and new_update_time and last_update_time and new_update_time == last_update_time then
+    return
+  end
+  current_weather_data = new_data
+  current_weather_path = new_path
+  last_update_time = new_update_time or last_update_time
+  update_weather_view(current_weather_data, current_weather_path)
+end
+
+local function refresh_weather_view()
+  if current_weather_data then
+    update_weather_view(current_weather_data, current_weather_path)
+  else
+    refresh_weather_data()
+  end
+end
+
+if dataman_ok and dataman and dataman.subscribe then
+  dataman.subscribe("timeMinute", time_label, function(obj, value)
+    if value ~= 2147483647 then
+      refresh_weather_data(true)
+    end
+  end)
+end
+
+if topic_ok and topic and topic.subscribe then
+  local function on_data_event()
+    refresh_weather_data()
+  end
+
+  topic.subscribe("event_data_sync", on_data_event)
+  topic.subscribe("event_new_day", on_data_event)
+  topic.subscribe("app_data_update", on_data_event)
+end
