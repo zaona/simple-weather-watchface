@@ -413,7 +413,10 @@ local function format_time_hm(update_time_text)
   if timestamp then
     return os.date("%H:%M", timestamp)
   end
-  return update_time_text:match("T(%d%d:%d%d)") or "--:--"
+  if type(update_time_text) == "string" then
+    return update_time_text:match("T(%d%d:%d%d)") or "--:--"
+  end
+  return "--:--"
 end
 
 local function format_current_time()
@@ -724,18 +727,18 @@ local function update_weather_view(data, source_path)
     if dashed then
       return dashed
     end
-    local compact = text:match("^(%d%d%d%d)(%d%d)(%d%d)$")
-    if compact then
-      return compact:sub(1, 4) .. "-" .. compact:sub(5, 6) .. "-" .. compact:sub(7, 8)
+    local year, month, day = text:match("^(%d%d%d%d)(%d%d)(%d%d)$")
+    if year then
+      return year .. "-" .. month .. "-" .. day
     end
     return nil
   end
 
   local today_str = normalize_date(os.date("%Y-%m-%d"))
   local today = nil
-  for _, day in pairs(data.daily) do
-    if normalize_date(day.fxDate) == today_str then
-      today = day
+  for _, day_item in ipairs(data.daily) do
+    if type(day_item) == "table" and normalize_date(day_item.fxDate) == today_str then
+      today = day_item
       break
     end
   end
@@ -804,37 +807,50 @@ local current_weather_data, current_weather_path = load_weather()
 local last_update_time = current_weather_data and current_weather_data.updateTime or nil
 update_weather_view(current_weather_data, current_weather_path)
 
+local function safe_run(fn)
+  local ok = pcall(fn)
+  return ok
+end
+
 local function refresh_weather_data(force)
-  local new_data, new_path = load_weather()
-  local new_update_time = new_data and new_data.updateTime or nil
-  if not force and new_update_time and last_update_time and new_update_time == last_update_time then
-    return
-  end
-  current_weather_data = new_data
-  current_weather_path = new_path
-  last_update_time = new_update_time or last_update_time
-  update_weather_view(current_weather_data, current_weather_path)
+  safe_run(function()
+    local new_data, new_path = load_weather()
+    local new_update_time = new_data and new_data.updateTime or nil
+    if not force and new_update_time and last_update_time and new_update_time == last_update_time then
+      return
+    end
+    current_weather_data = new_data
+    current_weather_path = new_path
+    last_update_time = new_update_time or last_update_time
+    update_weather_view(current_weather_data, current_weather_path)
+  end)
 end
 
 local function refresh_weather_view()
-  if current_weather_data then
-    update_weather_view(current_weather_data, current_weather_path)
-  else
-    refresh_weather_data()
-  end
+  safe_run(function()
+    if current_weather_data then
+      update_weather_view(current_weather_data, current_weather_path)
+    else
+      refresh_weather_data()
+    end
+  end)
 end
 
 if dataman_ok and dataman and dataman.subscribe then
   dataman.subscribe("timeMinute", time_label, function(obj, value)
     if value ~= 2147483647 then
-      refresh_weather_data(true)
+      safe_run(function()
+        refresh_weather_data(true)
+      end)
     end
   end)
 end
 
 if topic_ok and topic and topic.subscribe then
   local function on_data_event()
-    refresh_weather_data()
+    safe_run(function()
+      refresh_weather_data()
+    end)
   end
 
   topic.subscribe("event_data_sync", on_data_event)
