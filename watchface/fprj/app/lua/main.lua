@@ -90,135 +90,117 @@ local bg_image = lvgl.Image(root, {
 local time_label = lvgl.Label(root, {
   text = "--:--",
   text_color = 0xDCE4F0,
-  text_font = get_text_font(20),
-  align = { type = lvgl.ALIGN.TOP_MID, y_ofs = 8 },
-})
-
-local location_label = lvgl.Label(root, {
-  text = "位置",
-  text_color = 0xEAF1FA,
   text_font = get_text_font(24),
-  align = { type = lvgl.ALIGN.TOP_MID, y_ofs = 34 },
+  align = { type = lvgl.ALIGN.TOP_MID, y_ofs = -16 },
 })
 
-local update_label = lvgl.Label(root, {
-  text = "--",
-  text_color = 0xC3D0E2,
-  text_font = get_text_font(18),
-  align = { type = lvgl.ALIGN.TOP_MID, y_ofs = 64 },
-})
-
-
-local hero_group_w = screen_w - 32
+local hero_group_w = screen_w - 24
 local hero_group = lvgl.Object(root, {
   w = hero_group_w,
-  h = 240,
+  h = 300,
   bg_opa = 0,
   border_width = 0,
-  align = { type = lvgl.ALIGN.TOP_MID, y_ofs = 96 },
+  pad_all = 0,
+  align = { type = lvgl.ALIGN.TOP_MID, y_ofs = 20 },
 })
 hero_group:clear_flag(lvgl.FLAG.SCROLLABLE)
 hero_group:add_flag(lvgl.FLAG.EVENT_BUBBLE)
 
 local icon_image = lvgl.Image(hero_group, {
   src = img_path("weather-icons/cloudy.png"),
-  align = { type = lvgl.ALIGN.TOP_MID, y_ofs = 4 },
+  align = { type = lvgl.ALIGN.TOP_MID, y_ofs = 0 },
+})
+
+local location_label = lvgl.Label(hero_group, {
+  text = "位置",
+  text_color = 0xEAF1FA,
+  text_font = get_text_font(28),
+  align = { type = lvgl.ALIGN.TOP_MID, y_ofs = 48 },
 })
 
 local temp_label = lvgl.Label(hero_group, {
   text = "--°",
   text_color = 0xFFFFFF,
-  text_font = get_text_font(48),
-  align = { type = lvgl.ALIGN.TOP_MID, x_ofs = 8, y_ofs = 56 },
-})
-
-local condition_label = lvgl.Label(hero_group, {
-  text = "--",
-  text_color = 0xEAF1FA,
-  text_font = get_text_font(22),
-  align = { type = lvgl.ALIGN.TOP_MID, y_ofs = 130 },
+  text_font = get_text_font(72),
+  align = { type = lvgl.ALIGN.TOP_MID, x_ofs = 48, y_ofs = 132 },
 })
 
 local range_label = lvgl.Label(hero_group, {
   text = "--°/--°",
   text_color = 0xC3D0E2,
-  text_font = get_text_font(22),
-  align = { type = lvgl.ALIGN.TOP_MID, x_ofs = 3, y_ofs = 160 },
+  text_font = get_text_font(30),
+  align = { type = lvgl.ALIGN.TOP_MID, x_ofs = 4, y_ofs = 222 },
 })
 
-local detail_card_w = screen_w - 36
-local detail_card_h = 138
+local metrics_group_w = screen_w - 24
+local metrics_group_h = 128
 
-local detail_card = lvgl.Object(root, {
-  w = detail_card_w,
-  h = detail_card_h,
-  radius = 22,
-  bg_color = 0xFFFFFF,
-  bg_opa = lvgl.OPA(24),
+local metrics_group = lvgl.Object(root, {
+  w = metrics_group_w,
+  h = metrics_group_h,
+  bg_opa = 0,
   border_width = 0,
   pad_all = 0,
   align = { type = lvgl.ALIGN.BOTTOM_MID, y_ofs = -24 },
 })
-detail_card:clear_flag(lvgl.FLAG.SCROLLABLE)
-detail_card:add_flag(lvgl.FLAG.EVENT_BUBBLE)
+metrics_group:clear_flag(lvgl.FLAG.SCROLLABLE)
+metrics_group:add_flag(lvgl.FLAG.EVENT_BUBBLE)
 
-local detail_col_w = math.floor(detail_card_w / 2)
+local update_label = lvgl.Label(root, {
+  text = "--",
+  text_color = 0xDCE4F0,
+  text_font = get_text_font(20),
+  align = { type = lvgl.ALIGN.BOTTOM_MID, y_ofs = 4 },
+})
 
-local uv_value_label = lvgl.Label(detail_card, {
+local metric_col_w = math.floor(metrics_group_w / 2)
+
+local uv_col = lvgl.Object(metrics_group, {
+  w = metric_col_w,
+  h = metrics_group_h,
+  bg_opa = 0,
+  border_width = 0,
+  pad_all = 0,
+  align = { type = lvgl.ALIGN.TOP_LEFT, x_ofs = 0, y_ofs = 0 },
+})
+
+local hum_col = lvgl.Object(metrics_group, {
+  w = metric_col_w,
+  h = metrics_group_h,
+  bg_opa = 0,
+  border_width = 0,
+  pad_all = 0,
+  align = { type = lvgl.ALIGN.TOP_LEFT, x_ofs = metric_col_w, y_ofs = 0 },
+})
+
+local uv_value_label = lvgl.Label(uv_col, {
   text = "--",
   text_color = 0xFFFFFF,
-  text_font = get_text_font(22),
-  align = { type = lvgl.ALIGN.TOP_LEFT, x_ofs = 10, y_ofs = 12 },
+  text_font = get_text_font(30),
+  align = { type = lvgl.ALIGN.TOP_MID, y_ofs = 48 },
 })
 
-local uv_title_label = lvgl.Label(detail_card, {
-  text = "紫外线",
+local uv_title_label = lvgl.Label(uv_col, {
+  text = "UVI",
   text_color = 0xFFFFFF,
-  text_font = get_text_font(16),
-  align = { type = lvgl.ALIGN.TOP_LEFT, x_ofs = 10, y_ofs = 44 },
+  text_font = get_text_font(20),
+  align = { type = lvgl.ALIGN.TOP_MID, y_ofs = 14 },
 })
 
-local hum_value_label = lvgl.Label(detail_card, {
+local hum_value_label = lvgl.Label(hum_col, {
   text = "--",
   text_color = 0xFFFFFF,
-  text_font = get_text_font(22),
-  align = { type = lvgl.ALIGN.TOP_LEFT, x_ofs = detail_col_w + 6, y_ofs = 12 },
+  text_font = get_text_font(30),
+  align = { type = lvgl.ALIGN.TOP_MID, y_ofs = 48 },
 })
 
-local hum_title_label = lvgl.Label(detail_card, {
+local hum_title_label = lvgl.Label(hum_col, {
   text = "湿度",
   text_color = 0xFFFFFF,
-  text_font = get_text_font(16),
-  align = { type = lvgl.ALIGN.TOP_LEFT, x_ofs = detail_col_w + 6, y_ofs = 44 },
-})
-
-local wind_value_label = lvgl.Label(detail_card, {
-  text = "--",
-  text_color = 0xFFFFFF,
   text_font = get_text_font(20),
-  align = { type = lvgl.ALIGN.TOP_LEFT, x_ofs = 10, y_ofs = 74 },
+  align = { type = lvgl.ALIGN.TOP_MID, y_ofs = 14 },
 })
 
-local wind_title_label = lvgl.Label(detail_card, {
-  text = "风力",
-  text_color = 0xFFFFFF,
-  text_font = get_text_font(16),
-  align = { type = lvgl.ALIGN.TOP_LEFT, x_ofs = 10, y_ofs = 104 },
-})
-
-local pressure_value_label = lvgl.Label(detail_card, {
-  text = "--",
-  text_color = 0xFFFFFF,
-  text_font = get_text_font(20),
-  align = { type = lvgl.ALIGN.TOP_LEFT, x_ofs = detail_col_w + 6, y_ofs = 74 },
-})
-
-local pressure_title_label = lvgl.Label(detail_card, {
-  text = "气压",
-  text_color = 0xFFFFFF,
-  text_font = get_text_font(16),
-  align = { type = lvgl.ALIGN.TOP_LEFT, x_ofs = detail_col_w + 6, y_ofs = 104 },
-})
 
 local WeatherIconMap = {
   [100] = "sunny",
@@ -367,6 +349,14 @@ local function to_ascii(value, fallback)
   return value
 end
 
+local function format_one_decimal_percent(value)
+  local numeric = tonumber(value)
+  if not numeric then
+    return "--"
+  end
+  return string.format("%.1f", numeric)
+end
+
 local function parse_iso_time(text)
   if not text then
     return nil
@@ -385,7 +375,7 @@ local function parse_iso_time(text)
   })
 end
 
-local function format_time_ago(update_time_text)
+local function format_time_ago_short(update_time_text)
   local timestamp = parse_iso_time(update_time_text)
   if not timestamp then
     return "--"
@@ -398,11 +388,11 @@ local function format_time_ago(update_time_text)
   if diff_minutes < 1 then
     return "刚刚"
   elseif diff_minutes < 60 then
-    return tostring(diff_minutes) .. "分钟前更新"
+    return tostring(diff_minutes) .. "分钟前"
   elseif diff_hours < 24 then
-    return tostring(diff_hours) .. "小时前更新"
+    return tostring(diff_hours) .. "小时前"
   else
-    return tostring(diff_days) .. "天前更新"
+    return tostring(diff_days) .. "天前"
   end
 end
 
@@ -614,16 +604,13 @@ end
 
 local function update_weather_view(data)
   local function render_no_data()
-    temp_label:set({ text = "无数据", align = { type = lvgl.ALIGN.TOP_MID, x_ofs = 0, y_ofs = 70 } })
-    condition_label:set({ text = "--" })
+    temp_label:set({ text = "无数据", align = { type = lvgl.ALIGN.TOP_MID, x_ofs = 0, y_ofs = 132 } })
     time_label:set({ text = "--:--" })
     location_label:set({ text = "--" })
     update_label:set({ text = "--" })
     range_label:set({ text = "--°/--°" })
     uv_value_label:set({ text = "--" })
     hum_value_label:set({ text = "--" })
-    wind_value_label:set({ text = "--" })
-    pressure_value_label:set({ text = "--" })
     bg_image:set_src(img_path("weather-bgs/11.png"))
     icon_image:set_src(img_path("weather-icons/cloudy.png"))
   end
@@ -665,32 +652,23 @@ local function update_weather_view(data)
   local location = data.location or "--"
   local temp_max = today.tempMax or "--"
   local temp_min = today.tempMin or "--"
-  local text_day = today.textDay or "--"
   local humidity = today.humidity or "--"
   local uv_index = today.uvIndex or "--"
-  local wind_scale = today.windScaleDay or "--"
-  local pressure = today.pressure or "--"
   local update_time = data.updateTime or "--"
-  local time_ago = format_time_ago(update_time)
   local night = is_night_time(today.sunrise, today.sunset)
   local icon_code = get_mapped_icon_code(today.iconDay, night)
   local background = get_mapped_background_image(today.iconDay, night)
   local hourly_list = parse_hourly_list(data.hourly)
   local current_temp = get_current_temperature(today, hourly_list)
   local safe_location = to_ascii(location, "位置")
-  local safe_text = to_ascii(text_day, icon_code)
-  local safe_wind_scale = to_ascii(wind_scale, "--")
 
-  location_label:set({ text = safe_location })
   time_label:set({ text = format_current_time() })
-  update_label:set({ text = time_ago })
-  temp_label:set({ text = current_temp .. "°", align = { type = lvgl.ALIGN.TOP_MID, x_ofs = 8, y_ofs = 70 } })
+  location_label:set({ text = safe_location })
+  update_label:set({ text = format_time_ago_short(update_time) })
+  temp_label:set({ text = current_temp .. "°", align = { type = lvgl.ALIGN.TOP_MID, x_ofs = 8, y_ofs = 132 } })
   range_label:set({ text = temp_min .. "°/" .. temp_max .. "°" })
-  condition_label:set({ text = safe_text })
-  uv_value_label:set({ text = uv_index })
+  uv_value_label:set({ text = format_one_decimal_percent(uv_index) })
   hum_value_label:set({ text = humidity .. "%" })
-  wind_value_label:set({ text = safe_wind_scale })
-  pressure_value_label:set({ text = pressure })
   bg_image:set_src(img_path("weather-bgs/" .. background .. ".png"))
   icon_image:set_src(img_path("weather-icons/" .. icon_code .. ".png"))
 end
@@ -717,7 +695,7 @@ local function refresh_weather_data(force)
 end
 
 if dataman_ok and dataman and dataman.subscribe then
-  dataman.subscribe("timeMinute", time_label, function(obj, value)
+  dataman.subscribe("timeMinute", root, function(obj, value)
     if value ~= 2147483647 then
       refresh_weather_data(true)
     end
