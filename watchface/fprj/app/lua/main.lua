@@ -529,14 +529,14 @@ local function read_weather_file()
   local path = "/data/quickapp/files/com.application.zaona.weather/weather.txt"
   local file = io.open(path, "r")
   if not file then
-    return nil, path
+    return nil
   end
   local content = file:read("*a")
   file:close()
   if content and #content > 0 then
-    return content, path
+    return content
   end
-  return nil, path
+  return nil
 end
 
 local function parse_weather_v24(raw)
@@ -601,19 +601,19 @@ local function parse_weather_v24(raw)
 end
 
 local function load_weather()
-  local raw, source_path = read_weather_file()
+  local raw = read_weather_file()
   if not raw then
-    return nil, source_path
+    return nil
   end
   local data = parse_weather_v24(raw)
   if data and type(data.daily) == "table" and data.daily[1] then
-    return data, source_path
+    return data
   end
-  return nil, source_path
+  return nil
 end
 
 local function update_weather_view(data)
-  if not data or not data.daily or not data.daily[1] then
+  local function render_no_data()
     temp_label:set({ text = "无数据", align = { type = lvgl.ALIGN.TOP_MID, x_ofs = 0, y_ofs = 70 } })
     condition_label:set({ text = "--" })
     time_label:set({ text = "--:--" })
@@ -626,6 +626,10 @@ local function update_weather_view(data)
     pressure_value_label:set({ text = "--" })
     bg_image:set_src(img_path("weather-bgs/11.png"))
     icon_image:set_src(img_path("weather-icons/cloudy.png"))
+  end
+
+  if not data or not data.daily or not data.daily[1] then
+    render_no_data()
     return
   end
 
@@ -655,18 +659,7 @@ local function update_weather_view(data)
   end
 
   if not today then
-    temp_label:set({ text = "无数据", align = { type = lvgl.ALIGN.TOP_MID, x_ofs = 0, y_ofs = 70 } })
-    condition_label:set({ text = "--" })
-    time_label:set({ text = "--:--" })
-    location_label:set({ text = "--" })
-    update_label:set({ text = "--" })
-    range_label:set({ text = "--°/--°" })
-    uv_value_label:set({ text = "--" })
-    hum_value_label:set({ text = "--" })
-    wind_value_label:set({ text = "--" })
-    pressure_value_label:set({ text = "--" })
-    bg_image:set_src(img_path("weather-bgs/11.png"))
-    icon_image:set_src(img_path("weather-icons/cloudy.png"))
+    render_no_data()
     return
   end
   local location = data.location or "--"
@@ -702,54 +695,38 @@ local function update_weather_view(data)
   icon_image:set_src(img_path("weather-icons/" .. icon_code .. ".png"))
 end
 
-local current_weather_data, current_weather_path = load_weather()
+local current_weather_data = load_weather()
 local last_update_time = current_weather_data and current_weather_data.updateTime or nil
 update_weather_view(current_weather_data)
 
 local function safe_run(fn)
-  local ok = pcall(fn)
-  return ok
+  pcall(fn)
 end
 
 local function refresh_weather_data(force)
   safe_run(function()
-    local new_data, new_path = load_weather()
+    local new_data = load_weather()
     local new_update_time = new_data and new_data.updateTime or nil
     if not force and new_update_time and last_update_time and new_update_time == last_update_time then
       return
     end
     current_weather_data = new_data
-    current_weather_path = new_path
     last_update_time = new_update_time or last_update_time
     update_weather_view(current_weather_data)
-  end)
-end
-
-local function refresh_weather_view()
-  safe_run(function()
-    if current_weather_data then
-      update_weather_view(current_weather_data)
-    else
-      refresh_weather_data()
-    end
   end)
 end
 
 if dataman_ok and dataman and dataman.subscribe then
   dataman.subscribe("timeMinute", time_label, function(obj, value)
     if value ~= 2147483647 then
-      safe_run(function()
-        refresh_weather_data(true)
-      end)
+      refresh_weather_data(true)
     end
   end)
 end
 
 if topic_ok and topic and topic.subscribe then
   local function on_data_event()
-    safe_run(function()
-      refresh_weather_data()
-    end)
+    refresh_weather_data()
   end
 
   topic.subscribe("event_data_sync", on_data_event)
