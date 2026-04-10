@@ -2,6 +2,9 @@ local lvgl = require("lvgl")
 local dataman_ok, dataman = pcall(require, "dataman")
 local topic_ok, topic = pcall(require, "topic")
 local SCRIPT_PATH = rawget(_G, "SCRIPT_PATH") or ""
+local DATAMAN_INVALID_VALUE = 2147483647
+local PERIODIC_WEATHER_REFRESH_MINUTES = 10
+local MAX_WEATHER_FILE_SIZE = 128 * 1024
 
 local function file_exists(path)
   local file = io.open(path, "r")
@@ -262,9 +265,9 @@ local WeatherIconMap = {
   [513] = "fog",
   [514] = "fog",
   [515] = "fog",
-  [900] = 99,
-  [901] = 99,
-  [999] = 99,
+  [900] = "cloudy",
+  [901] = "sunny",
+  [999] = "cloudy",
 }
 
 local WeatherBackgroundImageMap = {
@@ -400,6 +403,15 @@ local function format_current_time()
   return os.date("%H:%M")
 end
 
+local function refresh_time_view(update_time)
+  time_label:set({ text = format_current_time() })
+  if update_time then
+    update_label:set({ text = format_time_ago_short(update_time) })
+  else
+    update_label:set({ text = "--" })
+  end
+end
+
 local function parse_time_to_minutes(time_text)
   if not time_text or type(time_text) ~= "string" then
     return nil
@@ -425,6 +437,9 @@ end
 local function get_mapped_icon_code(icon_code, night)
   local numeric = tonumber(icon_code)
   local mapped = WeatherIconMap[numeric or icon_code] or icon_code or "--"
+  if type(mapped) ~= "string" then
+    mapped = tostring(mapped)
+  end
   if night then
     if mapped == "sunny" then
       mapped = "sunny-night"
@@ -433,6 +448,12 @@ local function get_mapped_icon_code(icon_code, night)
     elseif mapped == "fog" then
       mapped = "fog-night"
     end
+  end
+  if not file_exists(img_path("weather-icons/" .. mapped .. ".png")) then
+    if night then
+      return "cloudy-night"
+    end
+    return "cloudy"
   end
   return mapped
 end
@@ -523,6 +544,9 @@ local function read_weather_file()
   end
   local content = file:read("*a")
   file:close()
+  if content and #content > MAX_WEATHER_FILE_SIZE then
+    return nil
+  end
   if content and #content > 0 then
     return content
   end
@@ -662,9 +686,8 @@ local function update_weather_view(data)
   local current_temp = get_current_temperature(today, hourly_list)
   local safe_location = to_ascii(location, "位置")
 
-  time_label:set({ text = format_current_time() })
+  refresh_time_view(update_time)
   location_label:set({ text = safe_location })
-  update_label:set({ text = format_time_ago_short(update_time) })
   temp_label:set({ text = current_temp .. "°", align = { type = lvgl.ALIGN.TOP_MID, x_ofs = 8, y_ofs = 132 } })
   range_label:set({ text = temp_min .. "°/" .. temp_max .. "°" })
   uv_value_label:set({ text = format_one_decimal_percent(uv_index) })
@@ -686,28 +709,91 @@ local function refresh_weather_data(force)
     local new_data = load_weather()
     local new_update_time = new_data and new_data.updateTime or nil
     if not force and new_update_time and last_update_time and new_update_time == last_update_time then
+      refresh_time_view(last_update_time)
       return
     end
     current_weather_data = new_data
-    last_update_time = new_update_time or last_update_time
+    last_update_time = new_update_time
     update_weather_view(current_weather_data)
   end)
 end
 
+local dataman_minute_token = nil
+
 if dataman_ok and dataman and dataman.subscribe then
-  dataman.subscribe("timeMinute", root, function(obj, value)
-    if value ~= 2147483647 then
-      refresh_weather_data(true)
+  dataman_minute_token = dataman.subscribe("timeMinute", root, function(obj, value)
+    if value == DATAMAN_INVALID_VALUE then
+      return
+    end
+    local minute = value // 256
+    refresh_time_view(last_update_time)
+    if minute % PERIODIC_WEATHER_REFRESH_MINUTES == 0 then
+      refresh_weather_data(false)
     end
   end)
 end
 
-if topic_ok and topic and topic.subscribe then
-  local function on_data_event()
-    refresh_weather_data()
+local topic_subscriptions = {}
+
+local function unsubscribe_topic_events()
+  for i = 1, #topic_subscriptions do
+    local sub = topic_subscriptions[i]
+    if sub and sub.unsubscribe then
+      pcall(function()
+        sub:unsubscribe()
+      end)
+    end
+  end
+  topic_subscriptions = {}
+end
+
+local function subscribe_topic_events()
+  if not (topic_ok and topic and topic.subscribe) then
+    return
+  end
+  if #topic_subscriptions > 0 then
+    return
   end
 
-  topic.subscribe("event_data_sync", on_data_event)
-  topic.subscribe("event_new_day", on_data_event)
-  topic.subscribe("app_data_update", on_data_event)
+  local function on_data_event()
+    refresh_weather_data(false)
+  end
+
+  local sub1 = topic.subscribe("event_data_sync", on_data_event)
+  local sub2 = topic.subscribe("event_new_day", on_data_event)
+  local sub3 = topic.subscribe("app_data_update", on_data_event)
+  table.insert(topic_subscriptions, sub1)
+  table.insert(topic_subscriptions, sub2)
+  table.insert(topic_subscriptions, sub3)
+end
+
+if topic_ok and topic and topic.subscribe then
+  subscribe_topic_events()
+end
+
+local function on_screen_on()
+  if dataman_ok and dataman and dataman.resume and dataman_minute_token then
+    pcall(function()
+      dataman.resume(dataman_minute_token)
+    end)
+  end
+  subscribe_topic_events()
+  refresh_weather_data(true)
+end
+
+local function on_screen_off()
+  if dataman_ok and dataman and dataman.pause and dataman_minute_token then
+    pcall(function()
+      dataman.pause(dataman_minute_token)
+    end)
+  end
+  unsubscribe_topic_events()
+end
+
+function ScreenStateChangedCB(pre, now, reason)
+  if pre ~= "ON" and now == "ON" then
+    on_screen_on()
+  elseif pre == "ON" and now ~= "ON" then
+    on_screen_off()
+  end
 end
