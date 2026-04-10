@@ -57,8 +57,6 @@ local root = lvgl.Object(nil, {
 root:clear_flag(lvgl.FLAG.SCROLLABLE)
 root:add_flag(lvgl.FLAG.EVENT_BUBBLE)
 
-local last_weather_raw = nil
-
 local function resolve_images_root()
   local candidates = {}
   if type(SCRIPT_PATH) == "string" then
@@ -408,17 +406,6 @@ local function format_time_ago(update_time_text)
   end
 end
 
-local function format_time_hm(update_time_text)
-  local timestamp = parse_iso_time(update_time_text)
-  if timestamp then
-    return os.date("%H:%M", timestamp)
-  end
-  if type(update_time_text) == "string" then
-    return update_time_text:match("T(%d%d:%d%d)") or "--:--"
-  end
-  return "--:--"
-end
-
 local function format_current_time()
   return os.date("%H:%M")
 end
@@ -507,7 +494,7 @@ end
 local function get_current_temperature(today, hourly_list)
   if type(hourly_list) == "table" then
     for _, entry in ipairs(hourly_list) do
-      local temp_value = entry.temp or entry.temperature
+      local temp_value = entry.temp
       if temp_value ~= nil then
         if type(temp_value) == "string" then
           local stripped = temp_value:gsub("°", "")
@@ -520,15 +507,16 @@ local function get_current_temperature(today, hourly_list)
   return calculate_average_temperature(today)
 end
 
-local function parse_hourly_list(hourly_data)
-  if not hourly_data or not hourly_data.hourly or type(hourly_data.hourly) ~= "table" then
+local function parse_hourly_list(hourly_list)
+  if type(hourly_list) ~= "table" then
     return {}
   end
+
   local now = os.time()
-  local threshold = now - 3600
+  local threshold = now - 7200
   local result = {}
-  for _, item in ipairs(hourly_data.hourly) do
-    local fx_time = item.fxTime or item.time
+  for _, item in ipairs(hourly_list) do
+    local fx_time = item.fxTime
     local timestamp = parse_iso_time(fx_time)
     if timestamp and timestamp >= threshold then
       table.insert(result, item)
@@ -538,65 +526,7 @@ local function parse_hourly_list(hourly_data)
 end
 
 local function read_weather_file()
-  local candidates = {
-    "internal://files/weather.txt",
-    "/data/quickapp/files/com.application.zaona.weather/weather.txt",
-    "/data/quickapp/files/com.application.zaona.weather/files/weather.txt",
-    "/data/quickapp/files/com.application.zaona.weather/internal/files/weather.txt",
-    "/data/quickapp/com.application.zaona.weather/files/weather.txt",
-    "/data/app/com.application.zaona.weather/files/weather.txt",
-  }
-
-  local function read_file(path)
-    local file = io.open(path, "r")
-    if file then
-      local content = file:read("*a")
-      file:close()
-      if content and #content > 0 then
-        return content
-      end
-    end
-    local fs = lvgl.fs.open_file(path, "r")
-    if fs then
-      local content = fs:read("*a")
-      fs:close()
-      if content and #content > 0 then
-        return content
-      end
-    end
-    return nil
-  end
-
-  for _, path in ipairs(candidates) do
-    local content = read_file(path)
-    if content then
-      return content, path
-    end
-  end
-
-  return nil, candidates[1]
-end
-
-local function decode_json(text)
-  local ok, json = pcall(require, "cjson")
-  if ok and json and json.decode then
-    local decoded_ok, data = pcall(json.decode, text)
-    if decoded_ok then
-      return data
-    end
-  end
-  ok, json = pcall(require, "json")
-  if ok and json and json.decode then
-    local decoded_ok, data = pcall(json.decode, text)
-    if decoded_ok then
-      return data
-    end
-  end
-  return nil
-end
-
-local function read_hourly_file()
-  local path = "/data/quickapp/files/com.application.zaona.weather/weather-hourly.txt"
+  local path = "/data/quickapp/files/com.application.zaona.weather/weather.txt"
   local file = io.open(path, "r")
   if not file then
     return nil, path
@@ -609,71 +539,65 @@ local function read_hourly_file()
   return nil, path
 end
 
-local function parse_weather_fallback(text)
-  local location = text:match('"location"%s*:%s*"(.-)"')
-  local update_time = text:match('"updateTime"%s*:%s*"(.-)"')
-  local daily_str = text:match('"daily"%s*:%s*%[([%s%S]-)%]') or ""
-  local daily_block = daily_str:match("%b{}")
-  if not daily_block then
+local function parse_weather_v24(raw)
+  if type(raw) ~= "string" or raw == "" then
     return nil
   end
-  local function pick(field)
-    return daily_block:match('"' .. field .. '"%s*:%s*"(.-)"')
-  end
-  return {
-    location = location,
-    updateTime = update_time,
-    daily = {
-      {
-        fxDate = pick("fxDate"),
-        tempMax = pick("tempMax"),
-        tempMin = pick("tempMin"),
-        sunrise = pick("sunrise"),
-        sunset = pick("sunset"),
-        iconDay = pick("iconDay"),
-        textDay = pick("textDay"),
-        humidity = pick("humidity"),
-        uvIndex = pick("uvIndex"),
-        pressure = pick("pressure"),
-        precip = pick("precip"),
-        windDirDay = pick("windDirDay"),
-        windScaleDay = pick("windScaleDay"),
-        wind360Day = pick("wind360Day"),
-      },
-    },
-  }
-end
 
-local function extract_day_from_raw(raw, target_date)
-  if not raw or not target_date then
+  local function pick_value(text, field)
+    return text:match('"' .. field .. '"%s*:%s*"(.-)"')
+  end
+
+  local function parse_array_objects(text, field)
+    local array_text = text:match('"' .. field .. '"%s*:%s*%[([%s%S]-)%]')
+    if not array_text then
+      return {}
+    end
+    local result = {}
+    for obj in array_text:gmatch("%b{}") do
+      table.insert(result, obj)
+    end
+    return result
+  end
+
+  local daily = {}
+  for _, obj in ipairs(parse_array_objects(raw, "daily")) do
+    table.insert(daily, {
+      fxDate = pick_value(obj, "fxDate"),
+      sunrise = pick_value(obj, "sunrise"),
+      sunset = pick_value(obj, "sunset"),
+      tempMax = pick_value(obj, "tempMax"),
+      tempMin = pick_value(obj, "tempMin"),
+      iconDay = pick_value(obj, "iconDay"),
+      textDay = pick_value(obj, "textDay"),
+      humidity = pick_value(obj, "humidity"),
+      uvIndex = pick_value(obj, "uvIndex"),
+      pressure = pick_value(obj, "pressure"),
+      windScaleDay = pick_value(obj, "windScaleDay"),
+    })
+  end
+
+  local hourly = {}
+  for _, obj in ipairs(parse_array_objects(raw, "hourly")) do
+    table.insert(hourly, {
+      fxTime = pick_value(obj, "fxTime"),
+      temp = pick_value(obj, "temp"),
+      icon = pick_value(obj, "icon"),
+      text = pick_value(obj, "text"),
+    })
+  end
+
+  if not daily[1] then
     return nil
   end
-  local daily_str = raw:match('"daily"%s*:%s*%[([%s%S]-)%]') or ""
-  for obj in daily_str:gmatch("%b{}") do
-    local fx = obj:match('"fxDate"%s*:%s*"(.-)"')
-    if fx == target_date then
-      local function pick(field)
-        return obj:match('"' .. field .. '"%s*:%s*"(.-)"')
-      end
-      return {
-        fxDate = fx,
-        tempMax = pick("tempMax"),
-        tempMin = pick("tempMin"),
-        sunrise = pick("sunrise"),
-        sunset = pick("sunset"),
-        iconDay = pick("iconDay"),
-        textDay = pick("textDay"),
-        humidity = pick("humidity"),
-        uvIndex = pick("uvIndex"),
-        pressure = pick("pressure"),
-        precip = pick("precip"),
-        windDirDay = pick("windDirDay"),
-        windScaleDay = pick("windScaleDay"),
-        wind360Day = pick("wind360Day"),
-      }
-    end
-  end
-  return nil
+
+  return {
+    code = pick_value(raw, "code"),
+    location = pick_value(raw, "location"),
+    updateTime = pick_value(raw, "updateTime"),
+    daily = daily,
+    hourly = hourly,
+  }
 end
 
 local function load_weather()
@@ -681,27 +605,14 @@ local function load_weather()
   if not raw then
     return nil, source_path
   end
-  last_weather_raw = raw
-  local data = decode_json(raw)
-  if data and data.daily and data.daily[1] then
+  local data = parse_weather_v24(raw)
+  if data and type(data.daily) == "table" and data.daily[1] then
     return data, source_path
   end
-  return parse_weather_fallback(raw), source_path
+  return nil, source_path
 end
 
-local function load_hourly_weather()
-  local raw = read_hourly_file()
-  if not raw then
-    return nil
-  end
-  local data = decode_json(raw)
-  if data and data.hourly and data.hourly[1] then
-    return data
-  end
-  return nil
-end
-
-local function update_weather_view(data, source_path)
+local function update_weather_view(data)
   if not data or not data.daily or not data.daily[1] then
     temp_label:set({ text = "无数据", align = { type = lvgl.ALIGN.TOP_MID, x_ofs = 0, y_ofs = 70 } })
     condition_label:set({ text = "--" })
@@ -743,13 +654,6 @@ local function update_weather_view(data, source_path)
     end
   end
 
-  if (not today or not today.fxDate) and last_weather_raw then
-    today = extract_day_from_raw(last_weather_raw, today_str) or today
-  end
-  if not today then
-    today = nil
-  end
-
   if not today then
     temp_label:set({ text = "无数据", align = { type = lvgl.ALIGN.TOP_MID, x_ofs = 0, y_ofs = 70 } })
     condition_label:set({ text = "--" })
@@ -771,19 +675,14 @@ local function update_weather_view(data, source_path)
   local text_day = today.textDay or "--"
   local humidity = today.humidity or "--"
   local uv_index = today.uvIndex or "--"
-  local wind_dir = today.windDirDay or today.windDir or "--"
-  local wind_scale = today.windScaleDay or today.windScale or "--"
+  local wind_scale = today.windScaleDay or "--"
   local pressure = today.pressure or "--"
-  local sunrise = today.sunrise or "--"
-  local sunset = today.sunset or "--"
   local update_time = data.updateTime or "--"
   local time_ago = format_time_ago(update_time)
-  local update_hm = format_time_hm(update_time)
   local night = is_night_time(today.sunrise, today.sunset)
   local icon_code = get_mapped_icon_code(today.iconDay, night)
   local background = get_mapped_background_image(today.iconDay, night)
-  local hourly_data = load_hourly_weather()
-  local hourly_list = hourly_data and parse_hourly_list(hourly_data) or {}
+  local hourly_list = parse_hourly_list(data.hourly)
   local current_temp = get_current_temperature(today, hourly_list)
   local safe_location = to_ascii(location, "位置")
   local safe_text = to_ascii(text_day, icon_code)
@@ -805,7 +704,7 @@ end
 
 local current_weather_data, current_weather_path = load_weather()
 local last_update_time = current_weather_data and current_weather_data.updateTime or nil
-update_weather_view(current_weather_data, current_weather_path)
+update_weather_view(current_weather_data)
 
 local function safe_run(fn)
   local ok = pcall(fn)
@@ -822,14 +721,14 @@ local function refresh_weather_data(force)
     current_weather_data = new_data
     current_weather_path = new_path
     last_update_time = new_update_time or last_update_time
-    update_weather_view(current_weather_data, current_weather_path)
+    update_weather_view(current_weather_data)
   end)
 end
 
 local function refresh_weather_view()
   safe_run(function()
     if current_weather_data then
-      update_weather_view(current_weather_data, current_weather_path)
+      update_weather_view(current_weather_data)
     else
       refresh_weather_data()
     end
