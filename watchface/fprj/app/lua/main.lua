@@ -4,14 +4,31 @@ local topic_ok, topic = pcall(require, "topic")
 local SCRIPT_PATH = rawget(_G, "SCRIPT_PATH") or ""
 local DATAMAN_INVALID_VALUE = 2147483647
 local PERIODIC_WEATHER_REFRESH_MINUTES = 10
-local MAX_WEATHER_FILE_SIZE = 128 * 1024
+local MAX_WEATHER_FILE_SIZE = 64 * 1024
+local TOPIC_REFRESH_THROTTLE_SECONDS = 5
+local MAX_DAILY_ITEMS = 31
+local MAX_HOURLY_ITEMS = 168
+
+local font_cache = {}
+local file_exists_cache = {}
+local label_text_cache = setmetatable({}, { __mode = "k" })
+local last_bg_src = nil
+local last_icon_src = nil
+local last_topic_refresh_at = 0
+local topic_subscribe_disabled = false
 
 local function file_exists(path)
+  local cached = file_exists_cache[path]
+  if cached ~= nil then
+    return cached
+  end
   local file = io.open(path, "r")
   if file then
     file:close()
+    file_exists_cache[path] = true
     return true
   end
+  file_exists_cache[path] = false
   return false
 end
 
@@ -32,11 +49,34 @@ local function clamp_montserrat_size(size)
 end
 
 local function safe_font(name, size)
+  local cache_key = name .. ":" .. tostring(size)
+  local cached = font_cache[cache_key]
+  if cached ~= nil then
+    return cached
+  end
+
   local ok, font = pcall(lvgl.Font, name, size)
   if ok and font then
+    font_cache[cache_key] = font
     return font
   end
-  return lvgl.Font("montserrat", clamp_montserrat_size(size), "normal")
+
+  local fallback_key = "montserrat:" .. tostring(clamp_montserrat_size(size))
+  local fallback = font_cache[fallback_key]
+  if fallback ~= nil then
+    font_cache[cache_key] = fallback
+    return fallback
+  end
+
+  local fallback_ok, fallback_font = pcall(lvgl.Font, "montserrat", clamp_montserrat_size(size), "normal")
+  if fallback_ok and fallback_font then
+    font_cache[fallback_key] = fallback_font
+    font_cache[cache_key] = fallback_font
+    return fallback_font
+  end
+
+  font_cache[cache_key] = nil
+  return nil
 end
 
 local use_misans = file_exists("/font/MiSans-Demibold.ttf")
@@ -68,7 +108,6 @@ local function resolve_images_root()
     table.insert(candidates, replaced)
     table.insert(candidates, normalized .. "../images/")
   end
-  table.insert(candidates, "/data/app/watchface/market/849698804/images/")
   table.insert(candidates, "/watchface/images/")
 
   for _, path in ipairs(candidates) do
@@ -83,6 +122,53 @@ local images_root = resolve_images_root()
 
 local function img_path(relative)
   return images_root .. relative
+end
+
+local function set_label_text(label, text, extra)
+  local last_text = label_text_cache[label]
+  local text_changed = last_text ~= text
+  if not text_changed and not extra then
+    return false
+  end
+  local props = { text = text }
+  if extra then
+    for key, value in pairs(extra) do
+      props[key] = value
+    end
+  end
+  label:set(props)
+  if text_changed then
+    label_text_cache[label] = text
+  end
+  return true
+end
+
+local function set_image_src_if_needed(image_obj, src, fallback_src, last_src)
+  local target_src = src
+  if fallback_src and not file_exists(target_src) then
+    target_src = fallback_src
+  end
+  if last_src == target_src then
+    return last_src
+  end
+
+  local ok = pcall(function()
+    image_obj:set_src(target_src)
+  end)
+  if ok then
+    return target_src
+  end
+
+  if fallback_src and fallback_src ~= target_src then
+    local fallback_ok = pcall(function()
+      image_obj:set_src(fallback_src)
+    end)
+    if fallback_ok then
+      return fallback_src
+    end
+  end
+
+  return last_src
 end
 
 local bg_image = lvgl.Image(root, {
@@ -384,6 +470,9 @@ local function format_time_ago_short(update_time_text)
     return "--"
   end
   local diff_seconds = os.time() - timestamp
+  if diff_seconds < 0 then
+    diff_seconds = 0
+  end
   local diff_minutes = math.floor(diff_seconds / 60)
   local diff_hours = math.floor(diff_minutes / 60)
   local diff_days = math.floor(diff_hours / 24)
@@ -404,11 +493,11 @@ local function format_current_time()
 end
 
 local function refresh_time_view(update_time)
-  time_label:set({ text = format_current_time() })
+  set_label_text(time_label, format_current_time())
   if update_time then
-    update_label:set({ text = format_time_ago_short(update_time) })
+    set_label_text(update_label, format_time_ago_short(update_time))
   else
-    update_label:set({ text = "--" })
+    set_label_text(update_label, "--")
   end
 end
 
@@ -531,6 +620,9 @@ local function parse_hourly_list(hourly_list)
     local timestamp = parse_iso_time(fx_time)
     if timestamp and timestamp >= threshold then
       table.insert(result, item)
+      if #result >= MAX_HOURLY_ITEMS then
+        break
+      end
     end
   end
   return result
@@ -542,7 +634,15 @@ local function read_weather_file()
   if not file then
     return nil
   end
-  local content = file:read("*a")
+  local size = file:seek("end")
+  if size and size > MAX_WEATHER_FILE_SIZE then
+    file:close()
+    return nil
+  end
+  if size then
+    file:seek("set", 0)
+  end
+  local content = file:read(MAX_WEATHER_FILE_SIZE + 1)
   file:close()
   if content and #content > MAX_WEATHER_FILE_SIZE then
     return nil
@@ -570,6 +670,10 @@ local function parse_weather_v24(raw)
     local result = {}
     for obj in array_text:gmatch("%b{}") do
       table.insert(result, obj)
+      local limit = field == "daily" and MAX_DAILY_ITEMS or MAX_HOURLY_ITEMS
+      if #result >= limit then
+        break
+      end
     end
     return result
   end
@@ -628,15 +732,15 @@ end
 
 local function update_weather_view(data)
   local function render_no_data()
-    temp_label:set({ text = "无数据", align = { type = lvgl.ALIGN.TOP_MID, x_ofs = 0, y_ofs = 132 } })
-    time_label:set({ text = "--:--" })
-    location_label:set({ text = "--" })
-    update_label:set({ text = "--" })
-    range_label:set({ text = "--°/--°" })
-    uv_value_label:set({ text = "--" })
-    hum_value_label:set({ text = "--" })
-    bg_image:set_src(img_path("weather-bgs/11.png"))
-    icon_image:set_src(img_path("weather-icons/cloudy.png"))
+    set_label_text(temp_label, "无数据", { align = { type = lvgl.ALIGN.TOP_MID, x_ofs = 0, y_ofs = 132 } })
+    set_label_text(time_label, format_current_time())
+    set_label_text(location_label, "--")
+    set_label_text(update_label, "--")
+    set_label_text(range_label, "--°/--°")
+    set_label_text(uv_value_label, "--")
+    set_label_text(hum_value_label, "--")
+    last_bg_src = set_image_src_if_needed(bg_image, img_path("weather-bgs/11.png"), nil, last_bg_src)
+    last_icon_src = set_image_src_if_needed(icon_image, img_path("weather-icons/cloudy.png"), nil, last_icon_src)
   end
 
   if not data or not data.daily or not data.daily[1] then
@@ -687,21 +791,23 @@ local function update_weather_view(data)
   local safe_location = to_ascii(location, "位置")
 
   refresh_time_view(update_time)
-  location_label:set({ text = safe_location })
-  temp_label:set({ text = current_temp .. "°", align = { type = lvgl.ALIGN.TOP_MID, x_ofs = 8, y_ofs = 132 } })
-  range_label:set({ text = temp_min .. "°/" .. temp_max .. "°" })
-  uv_value_label:set({ text = format_one_decimal_percent(uv_index) })
-  hum_value_label:set({ text = humidity .. "%" })
-  bg_image:set_src(img_path("weather-bgs/" .. background .. ".png"))
-  icon_image:set_src(img_path("weather-icons/" .. icon_code .. ".png"))
+  set_label_text(location_label, safe_location)
+  set_label_text(temp_label, current_temp .. "°", { align = { type = lvgl.ALIGN.TOP_MID, x_ofs = 8, y_ofs = 132 } })
+  set_label_text(range_label, temp_min .. "°/" .. temp_max .. "°")
+  set_label_text(uv_value_label, format_one_decimal_percent(uv_index))
+  set_label_text(hum_value_label, humidity .. "%")
+  last_bg_src = set_image_src_if_needed(bg_image, img_path("weather-bgs/" .. background .. ".png"), img_path("weather-bgs/11.png"), last_bg_src)
+  last_icon_src = set_image_src_if_needed(icon_image, img_path("weather-icons/" .. icon_code .. ".png"), img_path("weather-icons/cloudy.png"), last_icon_src)
 end
 
-local current_weather_data = load_weather()
-local last_update_time = current_weather_data and current_weather_data.updateTime or nil
-update_weather_view(current_weather_data)
+local current_weather_data = nil
+local last_update_time = nil
 
 local function safe_run(fn)
-  pcall(fn)
+  local ok, err = pcall(fn)
+  if not ok and err then
+    print(err)
+  end
 end
 
 local function refresh_weather_data(force)
@@ -718,19 +824,26 @@ local function refresh_weather_data(force)
   end)
 end
 
+refresh_weather_data(true)
+
 local dataman_minute_token = nil
 
 if dataman_ok and dataman and dataman.subscribe then
-  dataman_minute_token = dataman.subscribe("timeMinute", root, function(obj, value)
-    if value == DATAMAN_INVALID_VALUE then
-      return
-    end
-    local minute = value // 256
-    refresh_time_view(last_update_time)
-    if minute % PERIODIC_WEATHER_REFRESH_MINUTES == 0 then
-      refresh_weather_data(false)
-    end
+  local ok, token = pcall(dataman.subscribe, "timeMinute", root, function(obj, value)
+    safe_run(function()
+      if value == DATAMAN_INVALID_VALUE then
+        return
+      end
+      local minute = value // 256
+      refresh_time_view(last_update_time)
+      if minute % PERIODIC_WEATHER_REFRESH_MINUTES == 0 then
+        refresh_weather_data(false)
+      end
+    end)
   end)
+  if ok then
+    dataman_minute_token = token
+  end
 end
 
 local topic_subscriptions = {}
@@ -748,7 +861,7 @@ local function unsubscribe_topic_events()
 end
 
 local function subscribe_topic_events()
-  if not (topic_ok and topic and topic.subscribe) then
+  if topic_subscribe_disabled or not (topic_ok and topic and topic.subscribe) then
     return
   end
   if #topic_subscriptions > 0 then
@@ -756,15 +869,29 @@ local function subscribe_topic_events()
   end
 
   local function on_data_event()
+    local now = os.time()
+    if now - last_topic_refresh_at < TOPIC_REFRESH_THROTTLE_SECONDS then
+      return
+    end
+    last_topic_refresh_at = now
     refresh_weather_data(false)
   end
 
-  local sub1 = topic.subscribe("event_data_sync", on_data_event)
-  local sub2 = topic.subscribe("event_new_day", on_data_event)
-  local sub3 = topic.subscribe("app_data_update", on_data_event)
-  table.insert(topic_subscriptions, sub1)
-  table.insert(topic_subscriptions, sub2)
-  table.insert(topic_subscriptions, sub3)
+  local ok1, sub1 = pcall(topic.subscribe, "event_data_sync", on_data_event)
+  local ok2, sub2 = pcall(topic.subscribe, "event_new_day", on_data_event)
+  local ok3, sub3 = pcall(topic.subscribe, "app_data_update", on_data_event)
+  if ok1 and sub1 then
+    table.insert(topic_subscriptions, sub1)
+  end
+  if ok2 and sub2 then
+    table.insert(topic_subscriptions, sub2)
+  end
+  if ok3 and sub3 then
+    table.insert(topic_subscriptions, sub3)
+  end
+  if #topic_subscriptions == 0 then
+    topic_subscribe_disabled = true
+  end
 end
 
 if topic_ok and topic and topic.subscribe then
