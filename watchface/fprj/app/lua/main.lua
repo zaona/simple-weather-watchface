@@ -8,6 +8,7 @@ local MAX_WEATHER_FILE_SIZE = 64 * 1024
 local TOPIC_REFRESH_THROTTLE_SECONDS = 5
 local MAX_DAILY_ITEMS = 31
 local MAX_HOURLY_ITEMS = 168
+local RECOVERY_TIMEOUT_SECONDS = 1800
 
 local font_cache = {}
 local file_exists_cache = {}
@@ -16,6 +17,7 @@ local last_bg_src = nil
 local last_icon_src = nil
 local last_topic_refresh_at = 0
 local topic_subscribe_disabled = false
+local topic_needs_refresh = false
 
 local function file_exists(path)
   local cached = file_exists_cache[path]
@@ -122,6 +124,26 @@ local images_root = resolve_images_root()
 
 local function img_path(relative)
   return images_root .. relative
+end
+
+local icon_path_cache = {}
+local function get_icon_path(icon_code)
+  local cached = icon_path_cache[icon_code]
+  if not cached then
+    cached = img_path("weather-icons/" .. icon_code .. ".png")
+    icon_path_cache[icon_code] = cached
+  end
+  return cached
+end
+
+local bg_path_cache = {}
+local function get_bg_path(code)
+  local cached = bg_path_cache[code]
+  if not cached then
+    cached = img_path("weather-bgs/" .. code .. ".png")
+    bg_path_cache[code] = cached
+  end
+  return cached
 end
 
 local function set_label_text(label, text, extra)
@@ -513,14 +535,15 @@ local function parse_time_to_minutes(time_text)
 end
 
 local function is_night_time(sunrise, sunset)
-  local now = os.date("*t")
-  local current_minutes = now.hour * 60 + now.min
+  local h = tonumber(os.date("%H")) or 0
+  local m = tonumber(os.date("%M")) or 0
+  local current_minutes = h * 60 + m
   local sunrise_minutes = parse_time_to_minutes(sunrise)
   local sunset_minutes = parse_time_to_minutes(sunset)
   if sunrise_minutes and sunset_minutes then
     return current_minutes < sunrise_minutes or current_minutes >= sunset_minutes
   end
-  return now.hour >= 18 or now.hour < 6
+  return current_minutes >= 1080 or current_minutes < 360
 end
 
 local function get_mapped_icon_code(icon_code, night)
@@ -538,7 +561,7 @@ local function get_mapped_icon_code(icon_code, night)
       mapped = "fog-night"
     end
   end
-  if not file_exists(img_path("weather-icons/" .. mapped .. ".png")) then
+  if not file_exists(get_icon_path(mapped)) then
     if night then
       return "cloudy-night"
     end
@@ -612,15 +635,15 @@ local function parse_hourly_list(hourly_list)
     return {}
   end
 
-  local now = os.time()
-  local threshold = now - 7200
+  local now_str = os.date("%Y-%m-%dT%H:%M")
   local result = {}
+  local count = 0
   for _, item in ipairs(hourly_list) do
     local fx_time = item.fxTime
-    local timestamp = parse_iso_time(fx_time)
-    if timestamp and timestamp >= threshold then
-      table.insert(result, item)
-      if #result >= MAX_HOURLY_ITEMS then
+    if fx_time and type(fx_time) == "string" and fx_time >= now_str then
+      result[#result + 1] = item
+      count = count + 1
+      if count >= 24 then
         break
       end
     end
@@ -628,8 +651,7 @@ local function parse_hourly_list(hourly_list)
   return result
 end
 
-local function read_weather_file()
-  local path = "/data/quickapp/files/com.application.zaona.weather/weather.txt"
+local function read_file_raw(path)
   local file = io.open(path, "r")
   if not file then
     return nil
@@ -653,55 +675,212 @@ local function read_weather_file()
   return nil
 end
 
+local function read_weather_file()
+  local path = "/data/quickapp/files/com.application.zaona.weather/weather.txt"
+
+  local content1 = read_file_raw(path)
+  if not content1 then
+    return nil
+  end
+
+  local content2 = read_file_raw(path)
+  if not content2 then
+    return nil
+  end
+
+  if content1 == content2 then
+    return content1
+  end
+
+  return nil
+end
+
+-- 安全 JSON 辅助函数：逐字符扫描，无正则回溯风险
+local function json_skip_ws(s, pos)
+  while pos <= #s do
+    local b = s:byte(pos)
+    if b == 32 or b == 9 or b == 10 or b == 13 then
+      pos = pos + 1
+    else
+      break
+    end
+  end
+  return pos
+end
+
+local function json_field_pos(s, name, start)
+  local target = '"' .. name .. '"'
+  local pos = start or 1
+  while pos <= #s do
+    local found_start, found_end = s:find(target, pos, true)
+    if not found_start then
+      return nil
+    end
+    local after = json_skip_ws(s, found_end + 1)
+    if after <= #s and s:byte(after) == 58 then
+      return after + 1
+    end
+    pos = found_end + 1
+  end
+  return nil
+end
+
+local function json_extract_value(s, pos)
+  if not pos then
+    return nil, pos
+  end
+  pos = json_skip_ws(s, pos)
+  if pos > #s then
+    return nil, pos
+  end
+
+  local b = s:byte(pos)
+  if b == 34 then
+    local parts = {}
+    local i = pos + 1
+    local seg_start = i
+    while i <= #s do
+      local c = s:byte(i)
+      if c == 92 then
+        parts[#parts + 1] = s:sub(seg_start, i - 1)
+        i = i + 1
+        if i <= #s then
+          parts[#parts + 1] = s:sub(i, i)
+        end
+        i = i + 1
+        seg_start = i
+      elseif c == 34 then
+        parts[#parts + 1] = s:sub(seg_start, i - 1)
+        return table.concat(parts), i + 1
+      else
+        i = i + 1
+      end
+    end
+    return nil, i
+  elseif b == 123 then
+    local depth = 1
+    local i = pos + 1
+    while i <= #s and depth > 0 do
+      local c = s:byte(i)
+      if c == 34 then
+        i = i + 1
+        while i <= #s do
+          local sc = s:byte(i)
+          if sc == 92 then
+            i = i + 1
+          elseif sc == 34 then
+            break
+          end
+          i = i + 1
+        end
+      elseif c == 123 then
+        depth = depth + 1
+      elseif c == 125 then
+        depth = depth - 1
+      end
+      i = i + 1
+    end
+    if depth > 0 then
+      return nil, i
+    end
+    return s:sub(pos, i - 1), i
+  else
+    local i = pos
+    while i <= #s do
+      local c = s:byte(i)
+      if c == 44 or c == 125 or c == 93 or c <= 32 then
+        break
+      end
+      i = i + 1
+    end
+    return s:sub(pos, i - 1), i
+  end
+end
+
+local function json_extract_field(s, name)
+  local pos = json_field_pos(s, name)
+  local value = json_extract_value(s, pos)
+  return value
+end
+
+local function json_extract_array(s, field_name)
+  local pos = json_field_pos(s, field_name)
+  if not pos then
+    return {}
+  end
+
+  pos = json_skip_ws(s, pos)
+  if pos > #s or s:byte(pos) ~= 91 then
+    return {}
+  end
+  pos = pos + 1
+
+  local result = {}
+  local limit = field_name == "daily" and MAX_DAILY_ITEMS or MAX_HOURLY_ITEMS
+  local max_scan = math.min(#s, 256 * 1024)
+  local scanned = 0
+
+  while pos <= #s and #result < limit and scanned < max_scan do
+    pos = json_skip_ws(s, pos)
+    scanned = scanned + 1
+    if pos > #s then
+      break
+    end
+    if s:byte(pos) == 93 then
+      break
+    end
+
+    local obj_text, new_pos = json_extract_value(s, pos)
+    if not obj_text or type(obj_text) ~= "string" then
+      break
+    end
+    result[#result + 1] = obj_text
+    pos = new_pos
+
+    pos = json_skip_ws(s, pos)
+    if pos <= #s and s:byte(pos) == 44 then
+      pos = pos + 1
+    end
+  end
+
+  return result
+end
+
 local function parse_weather_v24(raw)
   if type(raw) ~= "string" or raw == "" then
     return nil
   end
 
-  local function pick_value(text, field)
-    return text:match('"' .. field .. '"%s*:%s*"(.-)"')
-  end
-
-  local function parse_array_objects(text, field)
-    local array_text = text:match('"' .. field .. '"%s*:%s*%[([%s%S]-)%]')
-    if not array_text then
-      return {}
-    end
-    local result = {}
-    for obj in array_text:gmatch("%b{}") do
-      table.insert(result, obj)
-      local limit = field == "daily" and MAX_DAILY_ITEMS or MAX_HOURLY_ITEMS
-      if #result >= limit then
-        break
-      end
-    end
-    return result
+  if not raw:find('"code"', 1, true) then
+    return nil
   end
 
   local daily = {}
-  for _, obj in ipairs(parse_array_objects(raw, "daily")) do
+  local daily_objects = json_extract_array(raw, "daily")
+  for _, obj in ipairs(daily_objects) do
     table.insert(daily, {
-      fxDate = pick_value(obj, "fxDate"),
-      sunrise = pick_value(obj, "sunrise"),
-      sunset = pick_value(obj, "sunset"),
-      tempMax = pick_value(obj, "tempMax"),
-      tempMin = pick_value(obj, "tempMin"),
-      iconDay = pick_value(obj, "iconDay"),
-      textDay = pick_value(obj, "textDay"),
-      humidity = pick_value(obj, "humidity"),
-      uvIndex = pick_value(obj, "uvIndex"),
-      pressure = pick_value(obj, "pressure"),
-      windScaleDay = pick_value(obj, "windScaleDay"),
+      fxDate = json_extract_field(obj, "fxDate"),
+      sunrise = json_extract_field(obj, "sunrise"),
+      sunset = json_extract_field(obj, "sunset"),
+      tempMax = json_extract_field(obj, "tempMax"),
+      tempMin = json_extract_field(obj, "tempMin"),
+      iconDay = json_extract_field(obj, "iconDay"),
+      textDay = json_extract_field(obj, "textDay"),
+      humidity = json_extract_field(obj, "humidity"),
+      uvIndex = json_extract_field(obj, "uvIndex"),
+      pressure = json_extract_field(obj, "pressure"),
+      windScaleDay = json_extract_field(obj, "windScaleDay"),
     })
   end
 
   local hourly = {}
-  for _, obj in ipairs(parse_array_objects(raw, "hourly")) do
+  local hourly_objects = json_extract_array(raw, "hourly")
+  for _, obj in ipairs(hourly_objects) do
     table.insert(hourly, {
-      fxTime = pick_value(obj, "fxTime"),
-      temp = pick_value(obj, "temp"),
-      icon = pick_value(obj, "icon"),
-      text = pick_value(obj, "text"),
+      fxTime = json_extract_field(obj, "fxTime"),
+      temp = json_extract_field(obj, "temp"),
+      icon = json_extract_field(obj, "icon"),
+      text = json_extract_field(obj, "text"),
     })
   end
 
@@ -710,9 +889,9 @@ local function parse_weather_v24(raw)
   end
 
   return {
-    code = pick_value(raw, "code"),
-    location = pick_value(raw, "location"),
-    updateTime = pick_value(raw, "updateTime"),
+    code = json_extract_field(raw, "code"),
+    location = json_extract_field(raw, "location"),
+    updateTime = json_extract_field(raw, "updateTime"),
     daily = daily,
     hourly = hourly,
   }
@@ -796,12 +975,13 @@ local function update_weather_view(data)
   set_label_text(range_label, temp_min .. "°/" .. temp_max .. "°")
   set_label_text(uv_value_label, format_one_decimal_percent(uv_index))
   set_label_text(hum_value_label, humidity .. "%")
-  last_bg_src = set_image_src_if_needed(bg_image, img_path("weather-bgs/" .. background .. ".png"), img_path("weather-bgs/11.png"), last_bg_src)
-  last_icon_src = set_image_src_if_needed(icon_image, img_path("weather-icons/" .. icon_code .. ".png"), img_path("weather-icons/cloudy.png"), last_icon_src)
+  last_bg_src = set_image_src_if_needed(bg_image, get_bg_path(background), img_path("weather-bgs/11.png"), last_bg_src)
+  last_icon_src = set_image_src_if_needed(icon_image, get_icon_path(icon_code), img_path("weather-icons/cloudy.png"), last_icon_src)
 end
 
 local current_weather_data = nil
 local last_update_time = nil
+local last_successful_refresh_at = os.time()
 
 local function safe_run(fn)
   local ok, err = pcall(fn)
@@ -813,14 +993,27 @@ end
 local function refresh_weather_data(force)
   safe_run(function()
     local new_data = load_weather()
-    local new_update_time = new_data and new_data.updateTime or nil
+    if not new_data then
+      local since_last = os.time() - last_successful_refresh_at
+      if current_weather_data and since_last < RECOVERY_TIMEOUT_SECONDS then
+        refresh_time_view(last_update_time)
+      else
+        current_weather_data = nil
+        last_update_time = nil
+        update_weather_view(nil)
+      end
+      return
+    end
+    local new_update_time = new_data.updateTime
     if not force and new_update_time and last_update_time and new_update_time == last_update_time then
       refresh_time_view(last_update_time)
+      last_successful_refresh_at = os.time()
       return
     end
     current_weather_data = new_data
     last_update_time = new_update_time
     update_weather_view(current_weather_data)
+    last_successful_refresh_at = os.time()
   end)
 end
 
@@ -836,7 +1029,9 @@ if dataman_ok and dataman and dataman.subscribe then
       end
       local minute = value // 256
       refresh_time_view(last_update_time)
-      if minute % PERIODIC_WEATHER_REFRESH_MINUTES == 0 then
+      local should_refresh = minute % PERIODIC_WEATHER_REFRESH_MINUTES == 0 or topic_needs_refresh
+      if should_refresh then
+        topic_needs_refresh = false
         refresh_weather_data(false)
       end
     end)
@@ -869,12 +1064,16 @@ local function subscribe_topic_events()
   end
 
   local function on_data_event()
-    local now = os.time()
-    if now - last_topic_refresh_at < TOPIC_REFRESH_THROTTLE_SECONDS then
-      return
+    if dataman_ok and dataman and dataman.subscribe then
+      topic_needs_refresh = true
+    else
+      local now = os.time()
+      if now - last_topic_refresh_at < TOPIC_REFRESH_THROTTLE_SECONDS then
+        return
+      end
+      last_topic_refresh_at = now
+      refresh_weather_data(false)
     end
-    last_topic_refresh_at = now
-    refresh_weather_data(false)
   end
 
   local ok1, sub1 = pcall(topic.subscribe, "event_data_sync", on_data_event)
