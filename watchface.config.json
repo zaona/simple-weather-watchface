@@ -1,12 +1,12 @@
 {
-    "projectName":  "简明天气",
-    "watchfaceId":  "849698804",
-    "power_consumption":  "3",
-    "resourceBin":  {
-                        "lvglVersion":  9,
-                        "colorFormat":  "I8",
-                        "compress":  "NONE",
-                        "input":  "watchface/fprj/images/preview.png",
-                        "name":  "preview"
-                    }
+  "projectName": "简明天气",
+  "watchfaceId": "200720260401",
+  "power_consumption": "3",
+  "resourceBin": {
+    "lvglVersion": 9,
+    "colorFormat": "I8",
+    "compress": "NONE",
+    "input": "watchface/fprj/images/preview.png",
+    "name": "preview"
+  }
 }
